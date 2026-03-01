@@ -1,0 +1,18 @@
+docker run -d \
+ --name signal-cli  \
+ --publish 7583:7583 \
+ --volume /some/local/dir/signal-cli-config:/var/lib/signal-cli \
+ --tmpfs /tmp:exec \
+ registry.gitlab.com/packaging/signal-cli/signal-cli-jre:latest \
+ daemon --tcp 0.0.0.0:7583
+
+
+https://github.com/bbernhard/signal-cli-rest-api
+sudo docker run -d --name signal-api --restart=always -p 8080:8080 \
+>       -v $HOME/.local/share/signal-api:/home/.local/share/signal-cli \
+>       -e 'MODE=json-rpc' bbernhard/signal-cli-rest-api
+
+
+ curl -X POST -H "Content-Type: application/json" 'http://localhost:8080/v2/send' \
+     -d '{"message": "Test via Signal API!", "number": "+14404134135", "recipients": [ "+14404134135" ]}'
+

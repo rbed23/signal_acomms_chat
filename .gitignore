@@ -1,0 +1,12 @@
+# dirs
+.idea
+.venv/*
+logs/*
+
+# types
+
+# files
+!logs/.gitkeep
+
+
+

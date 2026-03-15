@@ -26,6 +26,10 @@ fh.setFormatter(FORMATTER)
 LOGGER.addHandler(fh)
 
 
+def continue_uplink_to_signal_app(message: dict) -> bool:
+    if 'op' in message and message.get('op') == 'publish' and message.get('topic') == CHAT_UPLINK_TOPIC:
+        return True
+
 # ------ ROSBRIDGE WEBSOCKET ------
 def rosbridge_thread():
     ws = websocket.WebSocket()
@@ -52,40 +56,41 @@ def rosbridge_thread():
                 continue
             LOGGER.info(f"Received message: {ws_msg}")
 
-            if message.get("op") == "publish" and message.get("topic") == CHAT_UPLINK_TOPIC:
-                msg_data = message.get("msg")
-                if msg_data is None or msg_data.get("data") is None:
-                    LOGGER.warning(f"No actual message data received: {ws_msg}")
-                    LOGGER.debug(f"Received JSON to DEBUG:\n{ws_msg}")
-                    continue
-                LOGGER.debug(f"WEBSOCKET MESSAGE: {message}")
-                src_info = message.get("msg").get("source_name") if message.get("msg").get("source_name") is not None else message.get("msg").get("source")
-                d = {
-                    "message": f"{src_info}]{msg_data.get('data')}",
-                    "number": SIGNAL_CLI_API_SERVER_NUMBER,
-                    "recipients": [
-                        msg_data.get("recipient-number")
-                    ]
-                }
-                LOGGER.debug(f"WS DATA FOR SIGNAL API POST: {d}")
-
-                p = requests.post(
-                    SIGNAL_CLI_API_SEND_V2.substitute(
-                        {
-                            "PORT": SIGNAL_CLI_API_PORT
-                        }
-                    ),
-                    headers={"Content-Type": "application/json"},
-                    json=d
-                )
-                LOGGER.debug(f"SIGNAL API POST RESPONSE, URL: {p.status_code, p.url}")
-                if p.ok:
-                    LOGGER.info(f"WB MSG Posted to SIGNAL API Successful.")
-                else:
-                    LOGGER.warning(f"WS MSG POST Failed with code: {p.status_code}")
-                    LOGGER.warning(f"Failure Response: {p.text}")
-            else:
+            if not continue_uplink_to_signal_app(message):
                 LOGGER.warning(f"MSG Doesnt Meet Op ('publish') or Topic ('{CHAT_UPLINK_TOPIC}') Requirements")
+                continue
+
+            msg_data = message.get("msg")
+            if msg_data is None or msg_data.get("data") is None:
+                LOGGER.warning(f"No actual message data received: {ws_msg}")
+                LOGGER.debug(f"Received JSON to DEBUG:\n{ws_msg}")
+                continue
+            LOGGER.debug(f"WEBSOCKET MESSAGE: {message}")
+            src_info = message.get("msg").get("source_name") if message.get("msg").get("source_name") is not None else message.get("msg").get("source")
+            d = {
+                "message": f"{src_info}]{msg_data.get('data')}",
+                "number": SIGNAL_CLI_API_SERVER_NUMBER,
+                "recipients": [
+                    msg_data.get("recipient-number")
+                ]
+            }
+            LOGGER.debug(f"WS DATA FOR SIGNAL API POST: {d}")
+
+            p = requests.post(
+                SIGNAL_CLI_API_SEND_V2.substitute(
+                    {
+                        "PORT": SIGNAL_CLI_API_PORT
+                    }
+                ),
+                headers={"Content-Type": "application/json"},
+                json=d
+            )
+            LOGGER.debug(f"SIGNAL API POST RESPONSE, URL: {p.status_code, p.url}")
+            if p.ok:
+                LOGGER.info(f"WB MSG Posted to SIGNAL API Successful.")
+            else:
+                LOGGER.warning(f"WS MSG POST Failed with code: {p.status_code}")
+                LOGGER.warning(f"Failure Response: {p.text}")
     except Exception as e:
         LOGGER.error(f'***Caught an unexpected error: {(e,)}')
         ws.close()

@@ -38,7 +38,7 @@ async def echo(websocket):
                                 f"\'{msg.get('msg').get('source_name').upper()}]{msg.get('msg').get('data')}\' "
                                 f"on topic \'{msg.get('topic')}\' "
                                 f"to ACOUSTIC NETWORK "
-                                f"from on Source: {msg.get('msg').get('source'), msg.get('msg').get('source_name')}")
+                                f"from Source: {msg.get('msg').get('source'), msg.get('msg').get('source_name')}")
                 if msg.get('op') == 'publish' and msg.get('topic') == CHAT_UPLINK_TOPIC:
                     _ph = f"{msg.get('msg').get('source_name').upper()}]" if msg.get('msg').get('source_name') is not None else f"{msg.get('msg').get('source')}:"
                     LOGGER.info(f"FAKE ROSBRIDGE SERVER ACTION: "
@@ -46,7 +46,7 @@ async def echo(websocket):
                                 f"\'{_ph}{msg.get('msg').get('data')}\' "
                                 f"on topic \'{msg.get('topic')}\' "
                                 f"to SIGNAL APP "
-                                f"from on Source: {msg.get('msg').get('source'), msg.get('msg').get('source_name')}")
+                                f"from Source: {msg.get('msg').get('source'), msg.get('msg').get('source_name')}")
             except AttributeError:
                 pass
     except (ConnectionClosedOK, ConnectionClosedError) as e:

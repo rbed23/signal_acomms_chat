@@ -15,6 +15,7 @@ from utils.configs_logger import LOGGER, FORMATTER
 
 from utils.configs_signal_cli import (
     SIGNAL_CLI_API_RECEIVE_V1,
+    SIGNAL_CLI_API_IPADDR,
     SIGNAL_CLI_API_PORT,
     SIGNAL_CLI_API_SERVER_NUMBER,
     SIGNAL_CLI_API_MESSAGE_WAIT_SECONDS
@@ -22,6 +23,8 @@ from utils.configs_signal_cli import (
 
 from utils.configs_rosbridge_server import (
     ROSBRIDGE_WS_URL,
+    ROSBRIDGE_WS_IPADDR,
+    ROSBRIDGE_WS_PORT,
     CHAT_DOWNLINK_TOPIC
 )
 
@@ -126,6 +129,7 @@ class ReceiptMessage:
 def signal_listener():
     r_url = SIGNAL_CLI_API_RECEIVE_V1.substitute(
         {
+            "IPADDR": SIGNAL_CLI_API_IPADDR,
             "PORT": SIGNAL_CLI_API_PORT,
             "NUMBER": SIGNAL_CLI_API_SERVER_NUMBER
         }
@@ -198,7 +202,11 @@ def signal_listener():
                     dm = DataMessage(env)
                     dm.message = env.get("dataMessage")["message"]
                     ws = websocket.WebSocket()
-                    ws.connect(ROSBRIDGE_WS_URL)
+                    ws.connect(ROSBRIDGE_WS_URL.substitute(
+                        {
+                            "IPADDR": ROSBRIDGE_WS_IPADDR,
+                            "PORT": ROSBRIDGE_WS_PORT
+                        }))
                     ws.send(json.dumps({
                         "op": "publish",
                         "topic": CHAT_DOWNLINK_TOPIC,

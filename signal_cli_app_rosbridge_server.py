@@ -8,6 +8,7 @@ import websocket
 from utils.configs_logger import LOGGER, FORMATTER
 
 from utils.configs_signal_cli import (
+    SIGNAL_CLI_API_IPADDR,
     SIGNAL_CLI_API_PORT,
     SIGNAL_CLI_API_SERVER_NUMBER,
     SIGNAL_CLI_API_SEND_V2,
@@ -16,6 +17,8 @@ from utils.configs_signal_cli import (
 
 from utils.configs_rosbridge_server import (
     ROSBRIDGE_WS_URL,
+    ROSBRIDGE_WS_IPADDR,
+    ROSBRIDGE_WS_PORT,
     CHAT_UPLINK_TOPIC,
     CHAT_UPLINK_TYPE
 )
@@ -34,7 +37,7 @@ def continue_uplink_to_signal_app(message: dict) -> bool:
 def rosbridge_thread():
     ws = websocket.WebSocket()
     try:
-        ws.connect(ROSBRIDGE_WS_URL)
+        ws.connect(ROSBRIDGE_WS_URL.substitute({"IPADDR": ROSBRIDGE_WS_IPADDR, "PORT": ROSBRIDGE_WS_PORT}))
     except Exception as wse:
         LOGGER.error(f"Caught Error Connecting to WS: {(wse,)}")
 
@@ -79,6 +82,7 @@ def rosbridge_thread():
             p = requests.post(
                 SIGNAL_CLI_API_SEND_V2.substitute(
                     {
+                        "IPADDR": SIGNAL_CLI_API_IPADDR,
                         "PORT": SIGNAL_CLI_API_PORT
                     }
                 ),

@@ -6,7 +6,7 @@ import websockets
 from websockets.exceptions import ConnectionClosedOK, ConnectionClosedError
 
 from utils.configs_logger import LOGGER, FORMATTER
-from utils.configs_rosbridge_server import ROSBRIDGE_PORT, CHAT_DOWNLINK_TOPIC, CHAT_UPLINK_TOPIC
+from utils.configs_rosbridge_server import ROSBRIDGE_WS_PORT, CHAT_DOWNLINK_TOPIC, CHAT_UPLINK_TOPIC
 
 
 fh = FileHandler('logs/signal_cli_app_ws_server.log')
@@ -56,7 +56,7 @@ async def echo(websocket):
 
 
 async def main():
-    async with websockets.serve(echo, "localhost", ROSBRIDGE_PORT):
+    async with websockets.serve(echo, "localhost", ROSBRIDGE_WS_PORT):
         LOGGER.info("Server started.")
         await asyncio.Future()  # run forever
 

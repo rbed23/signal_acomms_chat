@@ -1,5 +1,9 @@
-ROSBRIDGE_PORT = 9090
-ROSBRIDGE_WS_URL = f"ws://localhost:{ROSBRIDGE_PORT}"
+from string import Template
+
+ROSBRIDGE_WS_IPADDR = 'localhost'
+ROSBRIDGE_WS_PORT = 9090
+
+ROSBRIDGE_WS_URL = Template("ws://$IPADDR:$PORT")
 
 # rostopic that injects chat message from SIGNAL app
 # DOWN into acoustic network

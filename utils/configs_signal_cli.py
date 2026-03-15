@@ -1,0 +1,9 @@
+from string import Template
+
+SIGNAL_CLI_API_MESSAGE_WAIT_SECONDS = 5
+SIGNAL_CLI_API_PORT = 8080
+SIGNAL_CLI_API_SERVER_NUMBER = "+16197191785"  # Phone # registered to ROSBRIDGE SERVER
+
+# SIGNAL CLI API URLS
+SIGNAL_CLI_API_RECEIVE_V1 = Template(f"http://localhost:$PORT/v1/receive/$NUMBER")
+SIGNAL_CLI_API_SEND_V2 = Template(f"http://localhost:$PORT/v2/send")

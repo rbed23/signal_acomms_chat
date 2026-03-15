@@ -16,3 +16,14 @@ sudo docker run -d --name signal-api --restart=always -p 8080:8080 \
  curl -X POST -H "Content-Type: application/json" 'http://localhost:8080/v2/send' \
      -d '{"message": "Test via Signal API!", "number": "+14404134135", "recipients": [ "+14404134135" ]}'
 
+Coming thru to phone as Unknown User: "need to add server phone number to contacts list" to have the number show up (instead of "Unknown User"
+
+To have a name for the contact show up, the "contact" must register the profile name with the signal server
+- https://bbernhard.github.io/signal-cli-rest-api/#/Profiles/put_v1_profiles__number_
+- >>> profile_url = "http://localhost:8080/v1/profiles/+16197191785"
+>>> d = {"name": "kemosabe-server", "about": "acommschat server interface between Signal and AcommsChat"}
+>>> r = requests.put(profile_url, json=d)
+>>> r
+<Response [204]>
+>>> r.text
+''

@@ -12,7 +12,7 @@ import time
 ROSBRIDGE_PORT = 9090
 ROSBRIDGE_URL = f"ws://localhost:{ROSBRIDGE_PORT}"
 SIGNAL_CLI_API_PORT = 8080
-SIGNAL_CLI_API_URL = f"http://localhost:{SIGNAL_CLI_API_PORT}/v1"
+SIGNAL_CLI_API_URL = f"http://localhost:{SIGNAL_CLI_API_PORT}"
 SIGNAL_NUMBER = "+16197191785"  # CORDC-ROS-registered device
 
 LOGGER = logging.getLogger(__name__)
@@ -33,13 +33,7 @@ EVENT_FLAG = threading.Event()
 
 # ------ ROSBRIDGE WEBSOCKET ------
 def rosbridge_thread():
-    ws = websocket.WebSocket(
-        environ={
-            "wsgi.websocket_port": ROSBRIDGE_PORT
-        },
-        socket=None,
-        rfile=None
-    )
+    ws = websocket.WebSocket()
     ws.connect(ROSBRIDGE_URL)
 
     # subscribe to outgoing topic
@@ -49,17 +43,43 @@ def rosbridge_thread():
         "type": "std_msgs/String"
     }))
 
-    while True:
-        message = json.loads(ws.recv())
-        if message.get("op") == "publish":
-            content = message["msg"]["data"]
-            subprocess.run([
-                "signal-cli",
-                "-u", SIGNAL_NUMBER,
-                "send", "<recipient-number>",
-                "-m", content
-            ])
-
+    p_url = f"{SIGNAL_CLI_API_URL}/v2/send"
+    try:
+        while True:
+            ws_msg = ws.recv()
+            print(f'Received via WEBSOCKET: {ws_msg}')
+            try:
+                message = json.loads(ws_msg)
+            except json.decoder.JSONDecodeError:
+                continue
+            if message.get("op") == "publish" and message.get("topic") == "/chat_output":
+                msg_data = message.get("msg")
+                if msg_data is None:
+                    continue
+                print(f"DECODED MESSAGE: {message}")
+                content = message["msg"]["data"]
+                recipient_number = message["msg"]["recipient-number"]
+                d = {
+                    "message": content,
+                    "number": SIGNAL_NUMBER,
+                    "recipients": [
+                        recipient_number
+                    ]
+                }
+                p = requests.post(p_url, headers={"Content-Type": "application/json"}, json=d)
+                print(p.url)
+                print(p.text)
+                print(p.json())
+                print(p.status_code)
+                # subprocess.run([
+                #     "signal-cli",
+                #     "-u", SIGNAL_NUMBER,
+                #     "send", "<recipient-number>",
+                #     "-m", content
+                # ])
+    except Exception as e:
+        print(f'Caught an unexpected error: {e}')
+        ws.close()
 
 
 # ------ SIGNAL CLI LISTENER ------
@@ -70,12 +90,8 @@ def signal_listener():
     #     text=True
     # )
 
-    headers = {
-        "Content-Type": "application/json",
-    }
-
-    r_url = f"{SIGNAL_CLI_API_URL}/receive/{SIGNAL_NUMBER}"
-    r = requests.get(r_url, headers=headers)
+    r_url = f"{SIGNAL_CLI_API_URL}/v1/receive/{SIGNAL_NUMBER}"
+    r = requests.get(r_url, headers={"Content-Type": "application/json"})
     LOGGER.info(f'Listening: {r.url}')
     rjson = r.json()
     LOGGER.info(json.dumps(rjson, indent=2)) if rjson else None
@@ -94,7 +110,10 @@ def signal_listener():
                 ws.send(json.dumps({
                     "op": "publish",
                     "topic": "/chat_input",
-                    "msg": {"data": data}
+                    "msg": {
+                        "data": data,
+                        "source": sender,
+                    }
                 }))
                 ws.close()
             elif 'typingMessage' in envelope:

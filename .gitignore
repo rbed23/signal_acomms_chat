@@ -1,7 +1,8 @@
 # dirs
 .idea
-.venv/*
+.venv
 logs/*
+*/__pycache__
 
 # types
 

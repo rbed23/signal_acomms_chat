@@ -27,6 +27,7 @@ The bridge is built on two existing projects:
 9. [Tests](#tests)
 10. [Security and sensitive files](#security-and-sensitive-files)
 11. [Known limitations](#known-limitations)
+12. [Upgrading from the original test implementation](#upgrading-from-the-original-test-implementation)
 
 ---
 
@@ -366,3 +367,44 @@ Only senders in `allowed_senders` can reach the acoustic network. Senders are ma
 - **Half-open links.** If the network to rosbridge silently dies, a publish can appear to succeed before the bridge notices and reconnects, so that message is lost.
 - **Untested Docker image.** The Dockerfile and Compose file are checked for syntax (`docker compose config`), but the image hasn't been built in CI yet.
 - **Deprecated prototype.** `signal_cli_app_tool.py` is the original prototype. It now reads `config.toml` but otherwise has none of the fixes above. Don't use it.
+
+---
+
+## Upgrading from the original test implementation
+
+### What changed
+
+| Before | Now |
+|---|---|
+| Settings hard-coded in `utils/configs_signal_cli.py`, `utils/configs_rosbridge_server.py` | One `config.toml` (template in `docs/config.example.toml`) plus `SACOMMS_*` environment overrides |
+| `utils/configs_logger.py` | `utils/log.py` (log directory set in `[logging]`) |
+| Receive only via HTTP polling, so `MODE=json-rpc` could not receive | `receive_mode = "auto"`: WebSocket stream for json-rpc, polling for normal/native |
+| Metadata in extra fields next to `data` | Carried inside `data` (`payload_format = "json"` by default). Set `payload_format = "legacy"` to keep the old shape with `ws_test_server.py`. |
+| Anyone could message the acoustic network | Only `bridge.allowed_senders` (nobody by default) |
+| No reconnects; a new WebSocket per downlink message | One persistent connection per process, with automatic reconnects |
+| Scripts had to be run from the repo root | Run from any directory. Use `-c` to choose a config file. |
+| `signal-daemon-start.txt` committed with real numbers | Git-ignored. The template is `docs/signal-daemon-start.example.txt`. |
+
+The script names and how you start them are unchanged. Anything outside this repo that imported the removed `utils/configs_*.py` modules has to switch to `utils.config.load_config()`.
+
+### Replacing an existing clone
+
+Replace the contents on a branch so history is kept and removed files show up as deletions:
+
+```bash
+cd path/to/signal_acomms_chat
+git checkout main && git pull
+git checkout -b bridge-v2
+unzip ~/Downloads/signal_acomms_chat-main.zip -d /tmp/sac_new
+git rm -r -q .                                # removes tracked files only (.venv, .idea stay)
+cp -a /tmp/sac_new/signal_acomms_chat-main/. .
+git add -A
+git status                                    # config.toml must NOT be listed
+git check-ignore -v config.toml signal-daemon-start.txt   # both should match .gitignore
+git commit -m "Rework bridge: json-rpc receive, reconnects, allow-list, central config, tests"
+git push -u origin bridge-v2                  # then open a PR and merge
+```
+
+After the merge, everyone else runs `git pull` and then `cp docs/config.example.toml config.toml`, and fills in their own numbers.
+
+Phone numbers committed earlier stay in the git history. To remove them, rewrite the history, for example with `git filter-repo --path signal-daemon-start.txt --invert-paths`. Everyone then has to re-clone.

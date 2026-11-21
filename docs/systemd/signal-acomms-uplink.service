@@ -1,0 +1,22 @@
+# EXAMPLE systemd unit for the uplink (ACOMMS -> Signal).
+# Adjust User and paths, then:
+#   sudo cp docs/systemd/signal-acomms-*.service /etc/systemd/system/
+#   sudo systemctl daemon-reload
+#   sudo systemctl enable --now signal-acomms-listener signal-acomms-uplink
+[Unit]
+Description=ACOMMS -> Signal chat uplink
+After=network-online.target docker.service
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=acomms
+WorkingDirectory=/opt/signal_acomms_chat
+ExecStart=/opt/signal_acomms_chat/.venv/bin/python signal_cli_app_rosbridge_server.py -c /opt/signal_acomms_chat/config.toml
+Restart=on-failure
+RestartSec=5
+KillSignal=SIGTERM
+TimeoutStopSec=15
+
+[Install]
+WantedBy=multi-user.target

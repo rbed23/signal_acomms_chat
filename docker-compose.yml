@@ -1,0 +1,54 @@
+# Signal <-> ACOMMS chat bridge
+#
+#   cp docs/env.example .env      # then edit .env
+#   docker compose up -d signal-api
+#   (register or link the number once, see README)
+#   docker compose up -d
+#
+# Local testing without ROS: start the fake rosbridge too and point the
+# bridge at it:
+#   SACOMMS_ROSBRIDGE_HOST=fake-rosbridge docker compose --profile test up -d
+
+x-bridge: &bridge
+  build: .
+  restart: unless-stopped
+  depends_on: [signal-api]
+  env_file:
+    - path: .env
+      required: false
+  environment:
+    SACOMMS_SIGNAL_API_HOST: signal-api
+    SACOMMS_SIGNAL_API_PORT: "8080"
+    SACOMMS_ROSBRIDGE_HOST: ${SACOMMS_ROSBRIDGE_HOST:-host.docker.internal}
+  extra_hosts:
+    - "host.docker.internal:host-gateway"
+  volumes:
+    - ./logs:/app/logs
+
+services:
+  signal-api:
+    image: bbernhard/signal-cli-rest-api:latest
+    restart: unless-stopped
+    environment:
+      MODE: ${SIGNAL_API_MODE:-json-rpc}
+    ports:
+      - "127.0.0.1:8080:8080"     # only reachable from this machine
+    volumes:
+      - ./signal-cli-config:/home/.local/share/signal-cli   # git-ignored: account keys
+
+  listener:
+    <<: *bridge
+    command: ["python", "signal_cli_app_listener_daemon.py"]
+
+  uplink:
+    <<: *bridge
+    command: ["python", "signal_cli_app_rosbridge_server.py"]
+
+  fake-rosbridge:
+    build: .
+    profiles: [test]
+    command: ["python", "ws_test_server.py", "--host", "0.0.0.0"]
+    ports:
+      - "127.0.0.1:9090:9090"
+    volumes:
+      - ./logs:/app/logs

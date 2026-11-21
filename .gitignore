@@ -1,13 +1,20 @@
-# dirs
-.idea
-.venv
+# --- dev environment ---
+.idea/
+.vscode/
+.venv/
+venv/
+__pycache__/
+*.py[cod]
+.pytest_cache/
+
+# --- logs (contain phone numbers and message content) ---
 logs/*
-*/__pycache__
-
-# types
-
-# files
 !logs/.gitkeep
 
-
-
+# --- SENSITIVE: local settings and Signal account data ---
+# Templates for each of these live in docs/ and ARE committed.
+config.toml                 # template: docs/config.example.toml
+.env                        # template: docs/env.example
+signal-daemon-start.txt     # template: docs/signal-daemon-start.example.txt
+signal-cli-config/          # Signal account keys created by signal-cli-rest-api
+*.local.toml

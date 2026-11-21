@@ -1,247 +1,127 @@
 """
-Listener for Signal CLI App
-Injects message from Signal App to inject into the ROSBRIDGE Server network
+DOWNLINK: Signal app -> ACOMMS chat network.
+
+Receives messages for the bridge's Signal number from signal-cli-rest-api
+(streaming WebSocket in MODE=json-rpc, HTTP polling in MODE=normal/native)
+and publishes allowed text messages to the rosbridge downlink topic.
+
+Usage:  python signal_cli_app_listener_daemon.py [-c config.toml] [--log-level DEBUG]
 """
-from datetime import datetime, timezone
-import json
-from logging import FileHandler, DEBUG, INFO, WARNING, ERROR
+from __future__ import annotations
+
 import threading
-import time
 
-import requests
-import websocket
-
-from utils.configs_logger import LOGGER, FORMATTER
-
-from utils.configs_signal_cli import (
-    SIGNAL_CLI_API_RECEIVE_V1,
-    SIGNAL_CLI_API_IPADDR,
-    SIGNAL_CLI_API_PORT,
-    SIGNAL_CLI_API_SERVER_NUMBER,
-    SIGNAL_CLI_API_MESSAGE_WAIT_SECONDS
+from utils.config import Config
+from utils.log import LOGGER
+from utils.messages import (
+    DataMessage, OtherMessage, ReceiptMessage, TypingMessage,
+    apply_length_policy, encode_downlink, fmt_ts, parse_receive_payload, sender_allowed,
 )
-
-from utils.configs_rosbridge_server import (
-    ROSBRIDGE_WS_URL,
-    ROSBRIDGE_WS_IPADDR,
-    ROSBRIDGE_WS_PORT,
-    CHAT_DOWNLINK_TOPIC
-)
-
-fh = FileHandler('logs/signal_cli_app_listener.log')
-fh.setLevel(DEBUG)
-fh.setFormatter(FORMATTER)
-LOGGER.addHandler(fh)
+from utils.rosbridge import RosbridgeClient
+from utils.runtime import install_stop_handlers, start
+from utils.signal_api import SignalClient
 
 
-_LOOP_RETRIES_TO_LOG = 5
+class DownlinkBridge:
+    def __init__(self, cfg: Config, stop: threading.Event,
+                 signal_client: SignalClient | None = None,
+                 ros_client: RosbridgeClient | None = None):
+        self.cfg = cfg
+        self.stop = stop
+        r = cfg.rosbridge
+        self.signal = signal_client or SignalClient(
+            cfg.signal, stop, r.reconnect_initial_seconds, r.reconnect_max_seconds)
+        self.ros = ros_client or RosbridgeClient(r, stop, name="downlink")
+        self.ros.advertise(r.downlink_topic, r.message_type)
 
-
-class EnvelopeMetaData:
-    def __init__(self, envelope):
-        if 'envelope' in envelope:
-            envelope = envelope.get("envelope")
-        _source = envelope.get('source')
-        self._source_name = envelope.get('sourceName')
-        self._source_number = envelope.get('sourceNumber')
-        self.source: str = self._source_name if self._source_name is not None \
-            else self._source_number if self._source_number is not None \
-            else _source
-        _source_id = envelope.get('sourceUuid')
-        _source_device = envelope.get('sourceDevice')
-
-        self.server_ts_event: float = int(envelope.get('timestamp'))/1000
-        self.server_ts_received: float = int(envelope.get('serverReceivedTimestamp'))/1000
-        self.server_ts_delivered: float = int(envelope.get('serverDeliveredTimestamp'))/1000
-
-    def __str__(self):
-        return f"EnvelopeMetaData: {vars(self)}"
-
-class DataMessage:
-    def __init__(self, data):
-        _data_message_pkg = self.verify(data)
-        self._envelope = EnvelopeMetaData(data)
-        self.source = self._envelope.source
-        self.message = _data_message_pkg['message']
-        self.message_generated_ts = int(_data_message_pkg['timestamp'])/1000
-        #self.message_expires_in = _data_message_pkg['expiresInSeconds']
-        #self.message_expiration_update = _data_message_pkg['isExpirationUpdate']
-        #self.message_view_once = _data_message_pkg['viewOnce']
-        self._from_account = _data_message_pkg.get('account')
-        self.packaged_message = f"{self.source.upper()}]{self.message}"
-
-    @staticmethod
-    def verify(envelope):
-        if 'dataMessage' not in envelope.keys():
-            raise AttributeError('dataMessage missing')
-        return envelope['dataMessage']
-
-
-class TypingMessage:
-    def __init__(self, data):
-        _typing_message_pkg = self.verify(data)
-        self._envelope = EnvelopeMetaData(data)
-        self.source = self._envelope.source
-        self.action = _typing_message_pkg['action']
-        self.action_generated_ts = int(_typing_message_pkg['timestamp'])/1000
-        #self.message_expires_in = _typing_message_pkg['expiresInSeconds']
-        #self.message_expiration_update = _typing_message_pkg['isExpirationUpdate']
-        #self.message_view_once = _typing_message_pkg['viewOnce']
-        self._from_account = _typing_message_pkg.get('account')
-        self.packaged_action = f"{self.source.upper()}]{self.action}"
-
-    @staticmethod
-    def verify(envelope):
-        if 'typingMessage' not in envelope.keys():
-            raise AttributeError('typingMessage missing')
-        return envelope['typingMessage']
-
-
-class ReceiptMessage:
-    def __init__(self, data):
-        _receipt_message_pkg = self.verify(data)
-        self._envelope = EnvelopeMetaData(data)
-        self.source = self._envelope.source
-        self.status, self.status_ts = self.get_status(_receipt_message_pkg)
-        self.receipt_generated_ts = _receipt_message_pkg['timestamps']
-        self._from_account = _receipt_message_pkg.get('account')
-        self.packaged_action = f"{self.source.upper()}]{self.status}"
-
-    @staticmethod
-    def get_status(status_data: dict):
-        status = 'Unknown'
-        if status_data.get('isDelivery'):
-            status = 'Delivered'
-        elif status_data.get('isRead'):
-            status = 'Read'
-        elif status_data.get('isViewed'):
-            status = 'Viewed'
-        return status, int(status_data.get('when'))/1000
-
-    @staticmethod
-    def verify(envelope: dict):
-        if 'receiptMessage' not in envelope.keys():
-            raise AttributeError('receiptMessage missing')
-        return envelope['receiptMessage']
-
-
-# ------ SIGNAL CLI LISTENER ------
-def signal_listener():
-    r_url = SIGNAL_CLI_API_RECEIVE_V1.substitute(
-        {
-            "IPADDR": SIGNAL_CLI_API_IPADDR,
-            "PORT": SIGNAL_CLI_API_PORT,
-            "NUMBER": SIGNAL_CLI_API_SERVER_NUMBER
-        }
-    )
-    LOGGER.debug(f'V1 SIGNAL CLI TX URL SUBSTITUTION: {r_url}')
-
-    LOGGER.info(f"Listener will check for new "
-                f"SIGNAL CLI API RECEIVED messages every "
-                f"[{SIGNAL_CLI_API_MESSAGE_WAIT_SECONDS}] seconds")
-    LOGGER.info(f'Listening: {r_url}')
-
-    _attempts = 0
-    while True:
-        # check for new Signal messages every period
-        time.sleep(SIGNAL_CLI_API_MESSAGE_WAIT_SECONDS)
-        _attempts += 1
-        if _attempts > _LOOP_RETRIES_TO_LOG:
-            LOGGER.debug(f"loop-check still active... "
-                         f"(repeats every "
-                         f"{SIGNAL_CLI_API_MESSAGE_WAIT_SECONDS * _LOOP_RETRIES_TO_LOG} "
-                         f"seconds)")
-            _attempts = 0
-        try:
-            r = requests.get(
-                r_url,
-                headers={"Content-Type": "application/json"}
-            )
-        except requests.exceptions.ConnectionError as e:
-            LOGGER.warning(f"Connection Error to {r_url} ({e})")
-            _attempts += 1
-            continue
-        except requests.exceptions.Timeout as e:
-            LOGGER.warning(f"Timeout to {r_url} ({e})")
-            _attempts += 1
-            continue
-        except requests.exceptions.RequestException as e:
-            LOGGER.warning(f"Request to {r_url} Failed ({e})")
-            _attempts += 1
-            continue
-
-        try:
-            rjson = r.json()
-        except json.decoder.JSONDecodeError as e:
-            LOGGER.warning(f'V1 SIGNAL CLI RECEIVE ERROR ({e}): {r.text}')
-            _attempts += 1
-            continue
+    def warn_about_policy(self) -> None:
+        b = self.cfg.bridge
+        if b.allow_all_senders:
+            LOGGER.warning("bridge.allow_all_senders is true: ANY Signal user can send "
+                           "into the acoustic network.")
+        elif not b.allowed_senders:
+            LOGGER.warning("bridge.allowed_senders is empty: every incoming message will be "
+                           "dropped. Add numbers/UUIDs to allowed_senders.")
         else:
-            if not rjson:
-                _attempts += 1
-                # nothing received,
-                # nothing to do
-                continue
-            elif 'error' in rjson:
-                _attempts += 1
-                LOGGER.warning(f"Response Error: {rjson.get('error').strip()}; "
-                               f"check the internet connection.")
-                continue
+            LOGGER.info(f"{len(b.allowed_senders)} sender(s) allowed into the acoustic network")
 
-        LOGGER.debug(f"SIGNAL CLI RESPONSE JSON:\n"
-                     f"{json.dumps(rjson, indent=2)}") if rjson else None
+    def _notify(self, address: str | None, text: str) -> None:
+        if address and self.cfg.bridge.notify_sender_on_oversize:
+            self.signal.send(text, [address])
 
-        for envelope in rjson:
-            if 'envelope' in envelope:
-                env = envelope.get("envelope")
-                sender = env.get("source")
-                sender_name = env.get("sourceName")
-                sender_number = env.get("sourceNumber")
-                ts_received = env.get("timestamp")
-                if 'dataMessage' in env:
-                    dm = DataMessage(env)
-                    dm.message = env.get("dataMessage")["message"]
-                    ws = websocket.WebSocket()
-                    ws.connect(ROSBRIDGE_WS_URL.substitute(
-                        {
-                            "IPADDR": ROSBRIDGE_WS_IPADDR,
-                            "PORT": ROSBRIDGE_WS_PORT
-                        }))
-                    ws.send(json.dumps({
-                        "op": "publish",
-                        "topic": CHAT_DOWNLINK_TOPIC,
-                        "msg": {
-                            "data": dm.message,
-                            "source": dm._envelope._source_number,
-                            "source_name": dm._envelope._source_name
-                        }
-                    }))
-                    ws.close()
-                    ts = datetime.fromtimestamp(dm.message_generated_ts, tz=timezone.utc)
-                    LOGGER.info(f"LOGGING: {sender, sender_name} sent '{dm.packaged_message}' at {ts}")
-                elif 'receiptMessage' in env:
-                    # TODO: handle receiptMessage envelope Type
-                    rm = ReceiptMessage(env)
-                    ts = datetime.fromtimestamp(rm.status_ts, tz=timezone.utc)
-                    LOGGER.info(f"LOGGING: Message Receipt Status from {sender, sender_name} '{rm.status}' at: {ts}")
-                elif 'typingMessage' in env:
-                    # TODO: properly handle typingMessage envelope Type
-                    tm = TypingMessage(env)
-                    ts = datetime.fromtimestamp(tm.action_generated_ts, tz=timezone.utc)
-                    LOGGER.info(f'LOGGING: {sender, sender_name} {tm.action} Typing at {ts}')
+    def handle(self, payload) -> int:
+        """Process one receive payload. Returns the number of messages published."""
+        published = 0
+        b, r = self.cfg.bridge, self.cfg.rosbridge
+        for ev in parse_receive_payload(payload):
+            who = (ev.meta.source_number or ev.meta.source_uuid, ev.meta.source_name)
+            if isinstance(ev, DataMessage):
+                if not sender_allowed(ev.meta, b):
+                    LOGGER.warning(f"DROPPED message from non-allowed sender {who}")
+                    continue
+                decision = apply_length_policy(ev.text, b)
+                limit = b.max_message_bytes
+                if decision.text is None:
+                    LOGGER.warning(f"REJECTED {decision.original_bytes}-byte message from {who} "
+                                   f"(limit {limit} bytes)")
+                    self._notify(ev.meta.reply_address,
+                                 f"Not sent: message is {decision.original_bytes} bytes; "
+                                 f"the acoustic link limit is {limit} bytes.")
+                    continue
+                if decision.changed:
+                    LOGGER.warning(f"TRUNCATED message from {who} from "
+                                   f"{decision.original_bytes} to {limit} bytes")
+                    self._notify(ev.meta.reply_address,
+                                 f"Your message was cut to {limit} bytes for the acoustic link.")
+                msg = encode_downlink(decision.text, ev.meta, ev.timestamp, r.payload_format)
+                if not self.ros.publish(r.downlink_topic, msg):
+                    LOGGER.error(f"Shutdown before message from {who} could be published")
+                    return published
+                published += 1
+                LOGGER.info(f"DOWNLINK {who} '{ev.meta.label.upper()}]{decision.text}' "
+                            f"sent at {fmt_ts(ev.timestamp)} -> {r.downlink_topic}")
+            elif isinstance(ev, ReceiptMessage):
+                LOGGER.debug(f"Receipt from {who}: {ev.status} at {fmt_ts(ev.timestamp)}")
+            elif isinstance(ev, TypingMessage):
+                LOGGER.debug(f"Typing from {who}: {ev.action} at {fmt_ts(ev.timestamp)}")
+            elif isinstance(ev, OtherMessage):
+                LOGGER.info(f"Not forwarded ({ev.kind}) from {who}")
+        return published
+
+    def run(self) -> None:
+        self.warn_about_policy()
+        # Connect to rosbridge first: in poll mode Signal deletes messages once
+        # fetched, so we should not fetch until we can deliver them.
+        if not self.ros.connect():
+            return
+        mode = self.signal.resolve_receive_mode()
+        if mode == "websocket":
+            stream = self.signal.stream_forever()
+        else:
+            LOGGER.info(f"Polling {self.cfg.signal.http_base}{self.signal.receive_path} every "
+                        f"{self.cfg.signal.poll_interval_seconds:g}s")
+            stream = self.signal.poll_forever()
+        try:
+            for payload in stream:
+                LOGGER.debug(f"SIGNAL RX: {payload}")
+                self.handle(payload)
+        finally:
+            self.ros.close()
+
+
+def main() -> None:
+    cfg = start("Signal -> ACOMMS downlink listener", "signal_cli_app_listener.log")
+    stop = threading.Event()
+    install_stop_handlers(stop)
+    LOGGER.info("SIGNAL CLI LISTENER starting...")
+    try:
+        DownlinkBridge(cfg, stop).run()
+    except Exception:  # noqa: BLE001 - log anything unexpected before exiting
+        LOGGER.exception("Unexpected error in listener")
+        raise SystemExit(1)
+    finally:
+        LOGGER.info("SIGNAL CLI LISTENER exited.")
 
 
 if __name__ == "__main__":
-    t = None
-    try:
-        LOGGER.info("SIGNAL CLI LISTENER Kicking off...")
-        t = threading.Thread(target=signal_listener)
-        t.start()
-    except KeyboardInterrupt:
-        pass
-    except Exception as e:
-        LOGGER.error(f'Caught an unexpected error: {e}')
-
-    t.join() if t is not None and t is threading.Thread and t.is_alive() else None
-    LOGGER.info("SIGNAL CLI LISTENER Exited.\n"
-                "---------------------------")
+    main()

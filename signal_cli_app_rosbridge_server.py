@@ -1,117 +1,80 @@
-import json
-from logging import FileHandler, DEBUG, INFO, WARNING, ERROR
+"""
+UPLINK: ACOMMS chat network -> Signal app.
+
+Subscribes to the rosbridge uplink topic and sends each chat message to its
+Signal recipient(s) through signal-cli-rest-api (POST /v2/send).
+
+Usage:  python signal_cli_app_rosbridge_server.py [-c config.toml] [--log-level DEBUG]
+"""
+from __future__ import annotations
+
 import threading
 
-import requests
-import websocket
-
-from utils.configs_logger import LOGGER, FORMATTER
-
-from utils.configs_signal_cli import (
-    SIGNAL_CLI_API_IPADDR,
-    SIGNAL_CLI_API_PORT,
-    SIGNAL_CLI_API_SERVER_NUMBER,
-    SIGNAL_CLI_API_SEND_V2,
-
-)
-
-from utils.configs_rosbridge_server import (
-    ROSBRIDGE_WS_URL,
-    ROSBRIDGE_WS_IPADDR,
-    ROSBRIDGE_WS_PORT,
-    CHAT_UPLINK_TOPIC,
-    CHAT_UPLINK_TYPE
-)
-
-fh = FileHandler('logs/signal_cli_app_rosbridge.log')
-fh.setLevel(DEBUG)
-fh.setFormatter(FORMATTER)
-LOGGER.addHandler(fh)
+from utils.config import Config
+from utils.log import LOGGER
+from utils.messages import decode_uplink, format_for_signal
+from utils.rosbridge import RosbridgeClient
+from utils.runtime import install_stop_handlers, start
+from utils.signal_api import SignalClient
 
 
-def continue_uplink_to_signal_app(message: dict) -> bool:
-    if 'op' in message and message.get('op') == 'publish' and message.get('topic') == CHAT_UPLINK_TOPIC:
-        return True
+class UplinkBridge:
+    def __init__(self, cfg: Config, stop: threading.Event,
+                 signal_client: SignalClient | None = None,
+                 ros_client: RosbridgeClient | None = None):
+        self.cfg = cfg
+        self.stop = stop
+        r = cfg.rosbridge
+        self.signal = signal_client or SignalClient(
+            cfg.signal, stop, r.reconnect_initial_seconds, r.reconnect_max_seconds)
+        self.ros = ros_client or RosbridgeClient(r, stop, name="uplink")
+        self.ros.subscribe(r.uplink_topic, r.message_type)
 
-# ------ ROSBRIDGE WEBSOCKET ------
-def rosbridge_thread():
-    ws = websocket.WebSocket()
+    def handle(self, frame: dict) -> bool:
+        """Process one rosbridge frame. True if a Signal message was sent."""
+        if frame.get("op") != "publish" or frame.get("topic") != self.cfg.rosbridge.uplink_topic:
+            LOGGER.debug(f"Ignoring rosbridge frame op={frame.get('op')} topic={frame.get('topic')}")
+            return False
+        up = decode_uplink(frame.get("msg"), self.cfg.bridge.default_recipients)
+        if up is None:
+            LOGGER.warning(f"No message text in uplink frame: {frame}")
+            return False
+        if not up.recipients:
+            LOGGER.warning(f"DROPPED uplink message with no recipient (and no "
+                           f"bridge.default_recipients): {up.text!r}")
+            return False
+        text = format_for_signal(up)
+        if self.signal.send(text, up.recipients):
+            LOGGER.info(f"UPLINK '{text}' -> Signal {list(up.recipients)}")
+            return True
+        LOGGER.error(f"FAILED to send uplink message to {list(up.recipients)}: {text!r}")
+        return False
+
+    def run(self) -> None:
+        LOGGER.info(f"Subscribing to {self.cfg.rosbridge.uplink_topic} "
+                    f"({self.cfg.rosbridge.message_type}) on {self.cfg.rosbridge.url}")
+        if not self.cfg.bridge.default_recipients:
+            LOGGER.info("No bridge.default_recipients set: uplink messages must name a recipient")
+        try:
+            for frame in self.ros.messages():
+                self.handle(frame)
+        finally:
+            self.ros.close()
+
+
+def main() -> None:
+    cfg = start("ACOMMS -> Signal uplink handler", "signal_cli_app_rosbridge.log")
+    stop = threading.Event()
+    install_stop_handlers(stop)
+    LOGGER.info("ROSBRIDGE HANDLER starting...")
     try:
-        ws.connect(ROSBRIDGE_WS_URL.substitute({"IPADDR": ROSBRIDGE_WS_IPADDR, "PORT": ROSBRIDGE_WS_PORT}))
-    except Exception as wse:
-        LOGGER.error(f"Caught Error Connecting to WS: {(wse,)}")
-
-    # subscribe to outgoing/uplink topic
-    # registration will connect messages from acoustic network
-    # out/up to SIGNAL App via SIGNAL CLI API
-    ws.send(json.dumps({
-        "op": "subscribe",
-        "topic": CHAT_UPLINK_TOPIC,
-        "type": CHAT_UPLINK_TYPE
-    }))
-    try:
-        while True:
-            ws_msg = ws.recv()
-            LOGGER.debug(f"WEBSOCKET RX: {ws_msg}")
-            try:
-                message = json.loads(ws_msg)
-            except json.decoder.JSONDecodeError:
-                continue
-            LOGGER.info(f"Received message: {ws_msg}")
-
-            if not continue_uplink_to_signal_app(message):
-                LOGGER.warning(f"MSG Doesnt Meet Op ('publish') or Topic ('{CHAT_UPLINK_TOPIC}') Requirements")
-                continue
-
-            msg_data = message.get("msg")
-            if msg_data is None or msg_data.get("data") is None:
-                LOGGER.warning(f"No actual message data received: {ws_msg}")
-                LOGGER.debug(f"Received JSON to DEBUG:\n{ws_msg}")
-                continue
-            LOGGER.debug(f"WEBSOCKET MESSAGE: {message}")
-            src_info = message.get("msg").get("source_name") if message.get("msg").get("source_name") is not None else message.get("msg").get("source")
-            d = {
-                "message": f"{src_info}]{msg_data.get('data')}",
-                "number": SIGNAL_CLI_API_SERVER_NUMBER,
-                "recipients": [
-                    msg_data.get("recipient-number")
-                ]
-            }
-            LOGGER.debug(f"WS DATA FOR SIGNAL API POST: {d}")
-
-            p = requests.post(
-                SIGNAL_CLI_API_SEND_V2.substitute(
-                    {
-                        "IPADDR": SIGNAL_CLI_API_IPADDR,
-                        "PORT": SIGNAL_CLI_API_PORT
-                    }
-                ),
-                headers={"Content-Type": "application/json"},
-                json=d
-            )
-            LOGGER.debug(f"SIGNAL API POST RESPONSE, URL: {p.status_code, p.url}")
-            if p.ok:
-                LOGGER.info(f"WB MSG Posted to SIGNAL API Successful.")
-            else:
-                LOGGER.warning(f"WS MSG POST Failed with code: {p.status_code}")
-                LOGGER.warning(f"Failure Response: {p.text}")
-    except Exception as e:
-        LOGGER.error(f'***Caught an unexpected error: {(e,)}')
-        ws.close()
-        LOGGER.warning(f'WEBSOCKET Closed.')
+        UplinkBridge(cfg, stop).run()
+    except Exception:  # noqa: BLE001
+        LOGGER.exception("Unexpected error in uplink handler")
+        raise SystemExit(1)
+    finally:
+        LOGGER.info("ROSBRIDGE HANDLER exited.")
 
 
 if __name__ == "__main__":
-    t = None
-    try:
-        LOGGER.info("ROSBRIDGE HANDLER Kicking off...")
-        t = threading.Thread(target=rosbridge_thread)
-        t.start()
-    except KeyboardInterrupt:
-        print("here...")
-    except Exception as e:
-        LOGGER.error(f'---Caught an unexpected error: {(e,)}')
-
-    t.join() if t is not None and t is threading.Thread and t.is_alive() else None
-    LOGGER.info("ROSBRIDGE HANDLER Exited.\n"
-                "---------------------------")
+    main()

@@ -1,6 +1,5 @@
+"""DEPRECATED prototype. See README.md."""
 import json
-import logging
-import sys
 
 import requests
 import signal
@@ -9,25 +8,18 @@ import websocket
 import threading
 import time
 
-ROSBRIDGE_PORT = 9090
-ROSBRIDGE_URL = f"ws://localhost:{ROSBRIDGE_PORT}"
-SIGNAL_CLI_API_PORT = 8080
-SIGNAL_CLI_API_URL = f"http://localhost:{SIGNAL_CLI_API_PORT}"
-SIGNAL_NUMBER = "+16197191785"  # CORDC-ROS-registered device
+# DEPRECATED: original all-in-one prototype, kept for reference only.
+# Use signal_cli_app_listener_daemon.py and signal_cli_app_rosbridge_server.py.
+# Settings now come from config.toml (see docs/config.example.toml).
+from utils.config import load_config
+from utils.log import setup_logging
 
-LOGGER = logging.getLogger(__name__)
-LOGGER.setLevel(logging.DEBUG)
-formatter = logging.Formatter('%(asctime)s - %(name)s - %(levelname)s - %(message)s')
+_CFG = load_config()
+ROSBRIDGE_URL = _CFG.rosbridge.url
+SIGNAL_CLI_API_URL = _CFG.signal.http_base
+SIGNAL_NUMBER = _CFG.signal.server_number
 
-sh = logging.StreamHandler(stream=sys.stdout)
-sh.setLevel(logging.DEBUG)
-sh.setFormatter(formatter)
-LOGGER.addHandler(sh)
-
-fh = logging.FileHandler('logs/signal_cli_app.log')
-fh.setLevel(logging.DEBUG)
-fh.setFormatter(formatter)
-LOGGER.addHandler(fh)
+LOGGER = setup_logging('signal_cli_app.log', _CFG.logging.level, _CFG.logging.dir)
 
 EVENT_FLAG = threading.Event()
 

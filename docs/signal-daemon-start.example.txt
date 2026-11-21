@@ -1,0 +1,36 @@
+Signal setup notes (EXAMPLE - copy to ../signal-daemon-start.txt for local
+notes; that file is git-ignored because it tends to collect phone numbers)
+
+Replace +1SERVERNUMBER with the bridge's Signal number and +1YOURPHONE with
+a test phone.
+
+1) Start signal-cli-rest-api  (https://github.com/bbernhard/signal-cli-rest-api)
+   Either:  docker compose up -d signal-api      (uses docker-compose.yml)
+   Or:
+   docker run -d --name signal-api --restart=always -p 8080:8080 \
+       -v $PWD/signal-cli-config:/home/.local/share/signal-cli \
+       -e 'MODE=json-rpc' bbernhard/signal-cli-rest-api
+
+   MODE=json-rpc  -> bridge receives over WebSocket (fast; receive_mode auto/websocket)
+   MODE=native    -> bridge polls over HTTP        (slower; receive_mode auto/poll)
+
+   Check the mode:   curl http://localhost:8080/v1/about
+
+2) Register or link the number
+   Link to an existing account:  open http://localhost:8080/v1/qrcodelink?device_name=acomms-bridge
+   and scan it in Signal > Settings > Linked devices.
+   Or register a new number via /v1/register/{number} (see the API docs).
+
+3) Test sending
+   curl -X POST -H "Content-Type: application/json" 'http://localhost:8080/v2/send' \
+        -d '{"message": "Test via Signal API!", "number": "+1SERVERNUMBER", "recipients": ["+1YOURPHONE"]}'
+
+4) Set a profile name so phones don't show "Unknown User"
+   curl -X PUT -H "Content-Type: application/json" \
+        'http://localhost:8080/v1/profiles/+1SERVERNUMBER' \
+        -d '{"name": "acomms-bridge", "about": "Interface between Signal and AcommsChat"}'
+   -> HTTP 204 = success
+
+Not used by this project: running signal-cli itself as a raw JSON-RPC daemon
+(registry.gitlab.com/packaging/signal-cli/signal-cli-jre ... daemon --tcp 0.0.0.0:7583).
+The bridge only talks to signal-cli-rest-api on port 8080.

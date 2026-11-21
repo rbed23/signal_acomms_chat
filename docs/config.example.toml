@@ -1,0 +1,67 @@
+# Signal <-> ACOMMS chat bridge configuration (EXAMPLE)
+#
+#   cp docs/config.example.toml config.toml
+#
+# config.toml is git-ignored because it holds phone numbers. Every value
+# can also be overridden with an environment variable named
+# SACOMMS_<SECTION>_<KEY>, e.g. SACOMMS_SIGNAL_SERVER_NUMBER=+15555550100.
+# Lists in environment variables are comma-separated.
+
+[signal]
+# Where bbernhard/signal-cli-rest-api is reachable
+api_host = "localhost"
+api_port = 8080
+api_scheme = "http"            # "https" if it sits behind a TLS proxy
+
+# The bridge's own Signal number, in E.164 format (REQUIRED)
+server_number = "+15555550100"
+
+# How to receive messages:
+#   "auto"      ask GET /v1/about which MODE the container runs in (recommended)
+#   "websocket" MODE=json-rpc / json-rpc-native: messages stream instantly
+#   "poll"      MODE=normal / native: HTTP GET every poll_interval_seconds
+receive_mode = "auto"
+poll_interval_seconds = 5
+request_timeout_seconds = 30
+
+[rosbridge]
+host = "localhost"
+port = 9090
+downlink_topic = "/chat_input"     # bridge PUBLISHES Signal messages here
+uplink_topic = "/chat_output"      # bridge SUBSCRIBES here for messages to Signal
+message_type = "std_msgs/String"
+
+# How sender/recipient metadata is carried inside std_msgs/String "data":
+#   "json"   data = '{"text":"hi","source":"+1...","source_name":"alice",...}'
+#   "text"   data = 'alice]hi'   (uplink recipients come from default_recipients)
+#   "legacy" original test format with extra non-standard fields next to "data"
+#            (only works with ws_test_server.py, not a real rosbridge)
+payload_format = "json"
+
+# Reconnect backoff for rosbridge and the Signal API (doubles up to the max)
+reconnect_initial_seconds = 1
+reconnect_max_seconds = 60
+
+[bridge]
+# Only these Signal senders (number or UUID) may send into the acoustic network
+allowed_senders = [
+  "+15555550123",
+  # "0b4e5e1c-1111-2222-3333-444455556666",
+]
+# Set to true to accept messages from anyone (not recommended)
+allow_all_senders = false
+
+# Acoustic payloads are small. Limit is on the UTF-8 chat text; encoding
+# overhead (JSON keys or the "name]" prefix) comes on top. 0 = no limit.
+max_message_bytes = 200
+oversize_policy = "truncate"       # or "reject"
+notify_sender_on_oversize = true   # reply on Signal when a message is cut/rejected
+
+# Who receives uplink messages that don't name a recipient
+default_recipients = [
+  # "+15555550123",
+]
+
+[logging]
+level = "INFO"                     # DEBUG logs full message content
+dir = "logs"                       # relative to the repository root
